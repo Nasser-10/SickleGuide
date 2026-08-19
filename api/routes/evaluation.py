@@ -15,8 +15,8 @@ RUBRIC = [
     {
         "id": "retrieval_quality",
         "title": "Retrieval Quality",
-        "description": "Measures whether the retrieval and reranking stages surface the most relevant clinical evidence.",
-        "metrics": ["candidate_recall@5", "reranked_recall@5", "mrr"],
+        "description": "Measures whether retrieval and reranking surface relevant clinical evidence with good precision, coverage and ranking quality.",
+        "metrics": ["candidate_precision@5", "candidate_recall@5", "reranked_precision@5", "reranked_recall@5", "mrr", "source_recall@10"],
         "mode": "automatic",
     },
     {
@@ -36,8 +36,8 @@ RUBRIC = [
     {
         "id": "evaluation_metrics",
         "title": "Evaluation & Metrics Implementation",
-        "description": "Assesses whether the system has reproducible evaluation datasets, retrieval metrics and end-to-end quality reporting.",
-        "metrics": ["recall@k", "mrr", "grounding", "citation_validity"],
+        "description": "Assesses reproducible evaluation datasets, retrieval precision/recall, ranking metrics and end-to-end quality reporting.",
+        "metrics": ["precision@k", "recall@k", "mrr", "grounding", "citation_validity"],
         "mode": "automatic_plus_review",
     },
     {
@@ -57,7 +57,7 @@ RUBRIC = [
     {
         "id": "innovation",
         "title": "Innovation & Out-of-the-Box Thinking",
-        "description": "Highlights differentiating capabilities such as graph retrieval, evidence fusion, claim checking and transparent evidence exploration.",
+        "description": "Highlights graph retrieval, evidence fusion, claim checking, transparent evidence exploration and automatic quality checks.",
         "metrics": [],
         "mode": "demo_review",
     },
@@ -104,10 +104,7 @@ async def run_evaluation(request: EvaluationRequest):
             "rubric": _rubric_snapshot(result, request.full),
         }
     except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Evaluation failed: {type(exc).__name__}: {exc}",
-        ) from exc
+        raise HTTPException(status_code=500, detail=f"Evaluation failed: {type(exc).__name__}: {exc}") from exc
 
 
 @router.get("/rubric")
