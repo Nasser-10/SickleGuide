@@ -17,33 +17,21 @@ def get_document_citation(document: Document) -> str:
 def build_citation_map(documents: List[Document]) -> Dict[int, str]:
     if not isinstance(documents, list):
         raise TypeError("documents must be a list")
-    return {index: get_document_citation(document) for index, document in enumerate(documents, start=1) if isinstance(document, Document)}
-
-
-def render_citation(evidence_number: int, citation_map: Dict[int, str]) -> str:
-    if evidence_number not in citation_map:
-        return ""
-    return f"[{evidence_number}] {citation_map[evidence_number]}"
-
-
-def render_citations(evidence_numbers: List[int], citation_map: Dict[int, str]) -> str:
-    citations = []
-    seen = set()
-    for number in evidence_numbers:
-        if number in seen:
-            continue
-        citation = render_citation(number, citation_map)
-        if citation:
-            citations.append(citation)
-        seen.add(number)
-    return "; ".join(citations)
+    return {
+        index: get_document_citation(document)
+        for index, document in enumerate(documents, start=1)
+        if isinstance(document, Document)
+    }
 
 
 def extract_evidence_numbers(text: str) -> List[int]:
     if not isinstance(text, str):
         raise TypeError("text must be a string")
     numbers: List[int] = []
-    for pattern in (r"\[\s*Evidence\s+(\d+)\s*\]", r"(?<!Evidence\s)\[\s*(\d+)\s*\]"):
+    for pattern in (
+        r"\[\s*Evidence\s+(\d+)\s*\]",
+        r"(?<!Evidence\s)\[\s*(\d+)\s*\]",
+    ):
         for value in re.findall(pattern, text, flags=re.IGNORECASE):
             number = int(value)
             if number not in numbers:
@@ -55,10 +43,8 @@ def validate_citations(answer: str, citation_map: Dict[int, str]) -> Dict:
     evidence_numbers = extract_evidence_numbers(answer)
     valid = [number for number in evidence_numbers if number in citation_map]
     invalid = [number for number in evidence_numbers if number not in citation_map]
-    # An answer containing medical content but no evidence references is not citation-valid.
-    has_medical_answer = bool(answer and answer.strip())
     return {
-        "valid": bool(has_medical_answer and evidence_numbers and not invalid),
+        "valid": bool(answer and answer.strip() and evidence_numbers and not invalid),
         "valid_evidence_numbers": valid,
         "invalid_evidence_numbers": invalid,
         "citation_count": len(evidence_numbers),
@@ -74,21 +60,25 @@ def build_citation_block(documents: List[Document]) -> str:
     return "\n".join(lines)
 
 
+def _remove_invalid_citations(answer: str, invalid_numbers: List[int]) -> str:
+    cleaned = answer
+    for number in invalid_numbers:
+        cleaned = re.sub(rf"\[\s*Evidence\s+{number}\s*\]", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(rf"\[\s*{number}\s*\]", "", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
 def format_answer_with_citations(answer: str, documents: List[Document]) -> str:
     if not isinstance(answer, str):
         raise TypeError("answer must be a string")
     answer = answer.strip()
     if not answer:
         return ""
+
     citation_map = build_citation_map(documents)
-    validation = validate_citations(answer, citation_map)
-    invalid_numbers = set(validation["invalid_evidence_numbers"])
-    cleaned_answer = answer
-    for number in invalid_numbers:
-        cleaned_answer = re.sub(rf"\[\s*Evidence\s+{number}\s*\]", "", cleaned_answer, flags=re.IGNORECASE)
-        cleaned_answer = re.sub(rf"\[\s*{number}\s*\]", "", cleaned_answer)
-    cleaned_answer = re.sub(r"[ \t]{2,}", " ", cleaned_answer)
-    cleaned_answer = re.sub(r"\n{3,}", "\n\n", cleaned_answer).strip()
+    initial = validate_citations(answer, citation_map)
+    cleaned_answer = _remove_invalid_citations(answer, initial["invalid_evidence_numbers"])
     source_block = build_citation_block(documents)
     return f"{cleaned_answer}\n\n{source_block}" if source_block else cleaned_answer
 
