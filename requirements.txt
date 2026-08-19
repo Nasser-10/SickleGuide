@@ -1,33 +1,25 @@
-# API
 fastapi
-uvicorn[standard]
+uvicorn
 pydantic
 pydantic-settings
 python-dotenv
-python-multipart
 
-# Document ingestion
-pymupdf
-markdown
-
-# LangChain / LangGraph / Ollama
 langchain-core
 langchain-ollama
 langgraph
 
-# Embeddings / vector search / reranking
+pymupdf
+markdown
+
 sentence-transformers
 chromadb
 rank-bm25
 
-# Knowledge graph
 networkx
 
-# Data / evaluation
 numpy
 pandas
 scikit-learn
 
-# HTTP / testing
 httpx
 pytest
