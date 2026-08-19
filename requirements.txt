@@ -4,6 +4,10 @@ pydantic
 pydantic-settings
 python-dotenv
 
+langchain-core
+langchain-ollama
+langgraph
+
 pymupdf
 markdown
 
