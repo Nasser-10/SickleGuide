@@ -1,0 +1,9 @@
+/* Evaluation presentation overrides */
+.live-quality-card{display:none!important}
+.evaluation-progress{margin:20px 0 24px}
+.evaluation-progress .progress-track{height:10px;border-radius:999px;overflow:hidden;background:rgba(110,125,155,.14)}
+.evaluation-progress .progress-track>div{height:100%;border-radius:999px;transition:width .35s ease}
+.evaluation-row{grid-template-columns:minmax(280px,2.4fr) repeat(5,minmax(100px,1fr))!important}
+.metric-card strong{font-variant-numeric:tabular-nums}
+.evaluation-history{margin-top:28px}
+.evaluation-method-grid{margin-top:28px}
