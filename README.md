@@ -14,7 +14,7 @@ Instead of relying only on unsupported LLM knowledge, SickleGuide combines **hyb
 
 ##  Demo
 
-> Replace the placeholder below with your demo video.
+
 
 [![SickleGuide Demo](docs/demo-thumbnail.png)](YOUR_DEMO_VIDEO_LINK)
 
@@ -42,7 +42,7 @@ Instead of relying only on unsupported LLM knowledge, SickleGuide combines **hyb
 
 ###  Knowledge Base
 
-![Knowledge Base](docs/screenshots/knowledge-base.jpeg)
+![Knowledge Base](docs/images/knowledge-base.jpeg)
 
 ---
 
