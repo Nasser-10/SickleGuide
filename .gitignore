@@ -22,6 +22,8 @@ env/
 # Data
 data/raw/*
 data/processed/*
+data/*.sqlite3
+data/*.sqlite
 
 # Chroma
 chroma/
