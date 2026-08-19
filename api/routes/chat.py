@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from src.evaluation.live import record_chat_evaluation
 from src.generation.llm import create_rag_engine
+from src.generation.quality_guard import robust_invoke
 from src.memory.store import get_memory_store
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
@@ -86,7 +87,7 @@ def chat(request: ChatRequest):
     chat_id = _safe_chat_id(request.chat_id)
     try:
         history = _get_history(request, chat_id)
-        result = get_rag_engine().invoke(query, conversation_history=history)
+        result = robust_invoke(get_rag_engine(), query, conversation_history=history)
         answer = result.get("final_answer", "")
         _memory.append_turn(chat_id, query, answer)
         record_chat_evaluation(query, result)
@@ -111,7 +112,7 @@ async def chat_stream(request: ChatRequest):
                 yield "data: " + json.dumps({"type": "status", "stage": stage, "message": message}) + "\n\n"
                 await asyncio.sleep(0)
 
-            result = await asyncio.to_thread(get_rag_engine().invoke, query, history)
+            result = await asyncio.to_thread(robust_invoke, get_rag_engine(), query, history)
             response = build_chat_response(result, query, chat_id)
 
             words = response.answer.split(" ")
