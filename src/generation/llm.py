@@ -59,7 +59,6 @@ class SickleGuideRAG:
 
     def initialize(self) -> None:
         if self._initialized: return
-        print("\n" + "=" * 70, flush=True); print("Initializing SickleGuide RAG Engine", flush=True); print("=" * 70, flush=True)
         with open(self.chunks_path, "r", encoding="utf-8") as file: data = json.load(file)
         self.documents = [Document(page_content=item["page_content"], metadata=item.get("metadata", {})) for item in data]
         if not self.documents: raise RuntimeError("No processed documents found.")
@@ -109,8 +108,16 @@ class SickleGuideRAG:
         return {"raw_answer": content, "grounded_answer": content, "safety_result": safety_result, "safety_instruction": safety_instruction, "grounding_retry_count": 0, "grounding_failed": False}
 
     def _grounding_review_node(self, state: RAGState) -> RAGState:
-        query, answer, documents = state["query"], state.get("grounded_answer", state.get("raw_answer", "")), state.get("final_documents", [])
-        evidence_text = "\n\n".join(f"[Evidence {i}]\nCitation: {d.metadata.get('citation', f\"{d.metadata.get('source', 'Unknown source')} — Page {d.metadata.get('page_number', 'Unknown')}\")}\nContent:\n{d.page_content}" for i, d in enumerate(documents, 1))
+        query = state["query"]
+        answer = state.get("grounded_answer", state.get("raw_answer", ""))
+        documents = state.get("final_documents", [])
+        evidence_blocks = []
+        for i, document in enumerate(documents, 1):
+            citation = document.metadata.get("citation")
+            if not citation:
+                citation = f"{document.metadata.get('source', 'Unknown source')} — Page {document.metadata.get('page_number', 'Unknown')}"
+            evidence_blocks.append(f"[Evidence {i}]\nCitation: {citation}\nContent:\n{document.page_content}")
+        evidence_text = "\n\n".join(evidence_blocks)
         prompt = f"""You are a strict but fair medical RAG grounding evaluator.\nQUESTION:\n{query}\n\nRETRIEVED EVIDENCE:\n{evidence_text}\n\nGENERATED ANSWER:\n{answer}\n\nA claim is grounded only when directly supported or faithfully paraphrased by the evidence. Do not use general medical knowledge, infer recommendations, comparative effectiveness, or unsupported conclusions. Preserve uncertainty. Do not treat conversation as evidence. Faithful concise summaries count as grounded. Return a structured grounding decision."""
         review = self.reviewer.invoke(prompt)
         return {"grounding_review": review.model_dump() if isinstance(review, GroundingReview) else GroundingReview.model_validate(review).model_dump()}
@@ -141,8 +148,12 @@ class SickleGuideRAG:
     def _citation_node(self, state: RAGState) -> RAGState:
         answer = state.get("grounded_answer", state.get("raw_answer", "")); documents = state.get("final_documents", [])
         final_answer = format_answer_with_citations(answer, documents)
-        citation_map = {i: d.metadata.get("citation", f"{d.metadata.get('source', 'Unknown source')} — Page {d.metadata.get('page_number', 'Unknown')}") for i, d in enumerate(documents, 1)}
-        # Validate the answer that the user actually sees, not the pre-rendered draft.
+        citation_map = {}
+        for i, document in enumerate(documents, 1):
+            citation = document.metadata.get("citation")
+            if not citation:
+                citation = f"{document.metadata.get('source', 'Unknown source')} — Page {document.metadata.get('page_number', 'Unknown')}"
+            citation_map[i] = citation
         validation = validate_citations(final_answer, citation_map)
         return {"final_answer": final_answer, "citation_validation": validation}
 
