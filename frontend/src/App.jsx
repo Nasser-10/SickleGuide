@@ -27,6 +27,23 @@ function MarkdownText({ text }) {
   return <div className="rich-answer">{blocks.map((block, i) => <p key={i}>{block.split("\n").map((line, j) => <span key={j}>{line}{j < block.split("\n").length - 1 && <br />}</span>)}</p>)}</div>;
 }
 
+function LiveEvaluation({ evaluation }) {
+  if (!evaluation) return null;
+  const pct = value => value == null ? "—" : `${(Number(value) * 100).toFixed(1)}%`;
+  return <div className="live-evaluation-card">
+    <div className="live-evaluation-head"><div><span className="eyebrow">AUTOMATIC QUALITY CHECK</span><h3>Response evaluation</h3></div><span className={`quality-pill ${evaluation.grounded && evaluation.citations_valid ? "good" : "review"}`}>{evaluation.grounded && evaluation.citations_valid ? "Verified" : "Needs review"}</span></div>
+    <div className="live-evaluation-grid">
+      <div><span>Grounding</span><strong>{evaluation.grounded ? "Pass" : "Review"}</strong></div>
+      <div><span>Citations</span><strong>{evaluation.citations_valid ? "Valid" : "Review"}</strong></div>
+      <div><span>Evidence used</span><strong>{evaluation.evidence_count ?? "—"}</strong></div>
+      <div><span>Precision@5</span><strong>{pct(evaluation["precision@5"])}</strong></div>
+      <div><span>Recall@5</span><strong>{pct(evaluation["recall@5"])}</strong></div>
+      <div><span>MRR</span><strong>{evaluation.mrr == null ? "—" : Number(evaluation.mrr).toFixed(3)}</strong></div>
+    </div>
+    {evaluation.precision_status && evaluation.precision_status !== "benchmark case" && <p className="evaluation-note">Precision/Recall are shown when the question belongs to the labeled evaluation set. Grounding and citation checks run automatically for every answer.</p>}
+  </div>;
+}
+
 function App() {
   const [page, setPage] = useState("chat");
   const [collapsed, setCollapsed] = useState(false);
@@ -40,6 +57,7 @@ function App() {
   const [streamingAnswer, setStreamingAnswer] = useState("");
   const [streamSources, setStreamSources] = useState([]);
   const [streamStage, setStreamStage] = useState("");
+  const [streamEvaluation, setStreamEvaluation] = useState(null);
   const [error, setError] = useState("");
 
   const graphRef = useRef(null);
@@ -78,7 +96,7 @@ function App() {
   useEffect(() => { localStorage.setItem(GRAPH_POSITIONS_KEY, JSON.stringify(graphPositions)); }, [graphPositions]);
 
   const updateChat = (chatId, updater) => setChats(items => items.map(c => c.id === chatId ? updater(c) : c));
-  const createNewChat = () => { const c = newChat(); setChats(items => [c, ...items]); setActiveChatId(c.id); setPage("chat"); setQuery(""); setError(""); setStreamingAnswer(""); };
+  const createNewChat = () => { const c = newChat(); setChats(items => [c, ...items]); setActiveChatId(c.id); setPage("chat"); setQuery(""); setError(""); setStreamingAnswer(""); setStreamEvaluation(null); };
   const deleteChat = (chatId) => {
     const next = chats.filter(c => c.id !== chatId);
     const fallback = next.length ? next : [newChat()];
@@ -88,7 +106,7 @@ function App() {
   const askSickleGuide = async () => {
     const clean = query.trim();
     if (!clean || loading || !activeChat) return;
-    setLoading(true); setError(""); setStreamingAnswer(""); setStreamSources([]); setStreamStage("Searching clinical evidence...");
+    setLoading(true); setError(""); setStreamingAnswer(""); setStreamSources([]); setStreamEvaluation(null); setStreamStage("Searching clinical evidence...");
     const userMessage = { id: id(), role: "user", content: clean, createdAt: Date.now() };
     const history = activeChat.messages.map(m => ({ role: m.role, content: m.content }));
     updateChat(activeChat.id, c => ({ ...c, title: c.messages.length ? c.title : shortTitle(clean), updatedAt: Date.now(), messages: [...c.messages, userMessage] }));
@@ -96,7 +114,7 @@ function App() {
     try {
       const response = await fetch(`${API_BASE_URL}/chat/stream`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "text/event-stream" }, body: JSON.stringify({ query: clean, chat_id: activeChat.id, history }) });
       if (!response.ok || !response.body) throw new Error(await response.text() || "Unable to start the response.");
-      const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ""; let answer = ""; let sources = [];
+      const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ""; let answer = ""; let sources = []; let liveEvaluation = null;
       while (true) {
         const { value, done } = await reader.read(); if (done) break;
         buffer += decoder.decode(value, { stream: true });
@@ -107,10 +125,11 @@ function App() {
           if (payload.type === "status") setStreamStage(payload.message || "Working...");
           if (payload.type === "token") { answer += payload.content || ""; setStreamingAnswer(answer); setStreamStage("Writing verified answer..."); }
           if (payload.type === "sources") { sources = payload.sources || []; setStreamSources(sources); }
+          if (payload.type === "live_evaluation") { liveEvaluation = payload.evaluation || null; setStreamEvaluation(liveEvaluation); }
           if (payload.type === "error") throw new Error(payload.message || "Response failed.");
         }
       }
-      if (answer) updateChat(activeChat.id, c => ({ ...c, updatedAt: Date.now(), messages: [...c.messages, { id: id(), role: "assistant", content: answer, sources, createdAt: Date.now() }] }));
+      if (answer) updateChat(activeChat.id, c => ({ ...c, updatedAt: Date.now(), messages: [...c.messages, { id: id(), role: "assistant", content: answer, sources, liveEvaluation, createdAt: Date.now() }] }));
     } catch (e) { setError(e?.message || "Could not connect to SickleGuide."); }
     finally { setLoading(false); setStreamStage(""); }
   };
@@ -191,10 +210,10 @@ function App() {
     <div className="chat-screen">
       <header className="chat-header"><div><span className="eyebrow">CLINICAL ASSISTANT</span><h1>{activeChat?.title || "SickleGuide"}</h1></div><div className="safe-pill"><span className="online-dot"/> Evidence grounded</div></header>
       <section className="chat-area">
-        {!activeChat?.messages?.length ? <div className="chat-empty pro-empty"><div className="large-logo">S</div><div className="gradient-badge">Evidence → Retrieval → Verification</div><h2>How can I help?</h2><p>Ask a clinical question and get an evidence-grounded response with traceable sources.</p><div className="quick-grid">{["What treatments were evaluated for acute chest syndrome?","What is recommended for secondary stroke prevention?","What are the recommendations during pregnancy?"] .map(q => <button key={q} onClick={() => setQuery(q)}>{q}<span>↗</span></button>)}</div></div> : <div className="messages">{activeChat.messages.map(m => <div className={`message-row ${m.role}`} key={m.id}><div className="message-avatar">{m.role === "user" ? "You" : "S"}</div><div className="message-body"><div className="message-role">{m.role === "user" ? "You" : "SickleGuide"}</div><div className="message-bubble">{m.role === "assistant" ? <MarkdownText text={m.content}/> : m.content}</div>{m.sources?.length > 0 && <div className="source-strip"><div className="source-strip-title">Evidence used</div>{m.sources.map(s => <div className="source-chip" key={`${s.evidence_id}-${s.citation}`}>[{s.evidence_id}] {s.citation}</div>)}</div>}</div></div>)}{loading && <div className="message-row assistant"><div className="message-avatar">S</div><div className="message-body"><div className="message-role">SickleGuide</div><div className="stream-box"><div className="stream-stage"><span className="spinner"/>{streamStage}</div>{streamingAnswer && <div className="stream-answer"><MarkdownText text={streamingAnswer}/><span className="cursor">▌</span></div>}{streamSources.length > 0 && <div className="source-strip compact"><div className="source-strip-title">Evidence</div>{streamSources.map(s => <div key={`${s.evidence_id}-${s.citation}`} className="source-chip">[{s.evidence_id}] {s.citation}</div>)}</div>}</div></div></div>}</div>}
+        {!activeChat?.messages?.length ? <div className="chat-empty pro-empty"><div className="large-logo">S</div><div className="gradient-badge">Evidence → Retrieval → Verification</div><h2>How can I help?</h2><p>Ask a clinical question and get an evidence-grounded response with traceable sources.</p><div className="quick-grid">{["What treatments were evaluated for acute chest syndrome?","What is recommended for secondary stroke prevention?","What are the recommendations during pregnancy?"] .map(q => <button key={q} onClick={() => setQuery(q)}>{q}<span>↗</span></button>)}</div></div> : <div className="messages">{activeChat.messages.map(m => <div className={`message-row ${m.role}`} key={m.id}><div className="message-avatar">{m.role === "user" ? "You" : "S"}</div><div className="message-body"><div className="message-role">{m.role === "user" ? "You" : "SickleGuide"}</div><div className="message-bubble">{m.role === "assistant" ? <MarkdownText text={m.content}/> : m.content}</div>{m.sources?.length > 0 && <div className="source-strip"><div className="source-strip-title">Evidence used</div>{m.sources.map(s => <div className="source-chip" key={`${s.evidence_id}-${s.citation}`}>[{s.evidence_id}] {s.citation}</div>)}</div>}{m.role === "assistant" && m.liveEvaluation && <LiveEvaluation evaluation={m.liveEvaluation}/>}</div></div>)}{loading && <div className="message-row assistant"><div className="message-avatar">S</div><div className="message-body"><div className="message-role">SickleGuide</div><div className="stream-box"><div className="stream-stage"><span className="spinner"/>{streamStage}</div>{streamingAnswer && <div className="stream-answer"><MarkdownText text={streamingAnswer}/><span className="cursor">▌</span></div>}{streamEvaluation && <LiveEvaluation evaluation={streamEvaluation}/>} {streamSources.length > 0 && <div className="source-strip compact"><div className="source-strip-title">Evidence</div>{streamSources.map(s => <div key={`${s.evidence_id}-${s.citation}`} className="source-chip">[{s.evidence_id}] {s.citation}</div>)}</div>}</div></div></div>}</div>}
         {error && <div className="error-box">{error}</div>}
       </section>
-      <div className="composer-area"><div className="composer"><textarea value={query} onChange={e => setQuery(e.target.value)} onKeyDown={handleKeyDown} placeholder="Message SickleGuide..." rows={1} disabled={loading}/><button onClick={askSickleGuide} disabled={loading || !query.trim()}>{loading ? "…" : "↑"}</button></div><div className="composer-note">Responses are generated from retrieved clinical evidence.</div></div>
+      <div className="composer-area"><div className="composer"><textarea value={query} onChange={e => setQuery(e.target.value)} onKeyDown={handleKeyDown} placeholder="Message SickleGuide..." rows={1} disabled={loading}/><button onClick={askSickleGuide} disabled={loading || !query.trim()}>{loading ? "…" : "↑"}</button></div><div className="composer-note">Responses are generated from retrieved clinical evidence. Automatic quality checks run after every answer.</div></div>
     </div>
   );
 
@@ -210,7 +229,7 @@ function App() {
 
   const renderPipeline = () => <div className="page"><div className="page-toolbar"><div><div className="eyebrow">SYSTEM ARCHITECTURE</div><h1>From evidence to verified answer</h1><p className="page-description">A transparent view of the retrieval, reasoning and safety pipeline.</p></div></div><div className="pipeline-grid">{[['01','PDF Sources','Curated clinical guidelines and evidence.'],['02','Ingestion','Page-aware parsing and metadata extraction.'],['03','Cleaning','Extraction noise is removed before retrieval.'],['04','Chunking','Context-preserving chunks with citations.'],['05','Embeddings','Clinical content is represented for semantic retrieval.'],['06','Hybrid Retrieval','Dense, lexical and graph signals are fused.'],['07','Reranking','Strongest evidence is promoted to the top.'],['08','Generation','Answer is produced from retrieved evidence.'],['09','Grounding','Unsupported claims are checked.'],['10','Citations','Evidence references are validated.'],['11','Safety','The system fails closed when evidence is insufficient.']].map(s=><div className="pipeline-card" key={s[0]}><div className="stage-number">{s[0]}</div><div><h3>{s[1]}</h3><p>{s[2]}</p></div></div>)}</div></div>;
 
-  const renderEvaluation = () => { const r=evaluationResult?.retrieval?.summary; const e=evaluationResult?.end_to_end?.summary; const metrics=[['Recall@5',r?`${(r['candidate_recall@5']*100).toFixed(1)}%`:"—"],['Reranked Recall@5',r?`${(r['reranked_recall@5']*100).toFixed(1)}%`:"—"],['MRR',r?Number(r.mrr).toFixed(3):"—"],['Grounding',e?`${(e.grounded_rate*100).toFixed(1)}%`:"—"],['Citation validity',e?`${(e.citation_valid_rate*100).toFixed(1)}%`:"—"],['Answer coverage',e?`${(e.answer_term_coverage*100).toFixed(1)}%`:"—"]]; return <div className="page"><div className="page-toolbar"><div><div className="eyebrow">QUALITY LAB</div><h1>Evaluation</h1><p className="page-description">Measure retrieval, reranking, grounding, citations and end-to-end answer quality.</p></div><button className="primary-button" onClick={runEvaluation} disabled={evaluationLoading}>{evaluationLoading?"Running…":"Run evaluation"}</button></div><div className="evaluation-controls"><div><h3>Evaluation mode</h3><p>Retrieval is faster. Full mode also evaluates generation and grounding.</p></div><label className="toggle"><input type="checkbox" checked={evaluationMode} onChange={e=>setEvaluationMode(e.target.checked)}/><span/>Full end-to-end</label></div>{evaluationLoading&&<div className="evaluation-progress"><div className="progress-head"><strong>{evaluationStage}</strong><span>{evaluationProgress}%</span></div><div className="progress-track"><div style={{width:`${evaluationProgress}%`}}/></div><div className="progress-steps"><span>Dataset</span><span>Retrieval</span><span>Reranking</span><span>Grounding</span><span>Report</span></div></div>}<div className="metric-grid">{metrics.map(m=><div className="metric-card" key={m[0]}><span>{m[0]}</span><strong>{m[1]}</strong></div>)}</div><div className="evaluation-method-grid">{[['Retrieval','Recall@K, source recall and MRR.'],['Reranking','Checks whether useful evidence reaches the top.'],['Grounding','Checks medical claims against retrieved evidence.'],['Citations','Checks evidence references before output.'],['Safety','Prevents unsupported behavior.'],['End-to-End','Measures the full SickleGuide pipeline.']].map(x=><div className="evaluation-method" key={x[0]}><div className="method-icon">✓</div><div><h3>{x[0]}</h3><p>{x[1]}</p></div></div>)}</div></div>; };
+  const renderEvaluation = () => { const r=evaluationResult?.retrieval?.summary; const e=evaluationResult?.end_to_end?.summary; const metrics=[['Precision@5',r?`${(r['candidate_precision@5']*100).toFixed(1)}%`:"—"],['Reranked Precision@5',r?`${(r['reranked_precision@5']*100).toFixed(1)}%`:"—"],['Recall@5',r?`${(r['candidate_recall@5']*100).toFixed(1)}%`:"—"],['Reranked Recall@5',r?`${(r['reranked_recall@5']*100).toFixed(1)}%`:"—"],['MRR',r?Number(r.mrr).toFixed(3):"—"],['Grounding',e?`${(e.grounded_rate*100).toFixed(1)}%`:"—"],['Citation validity',e?`${(e.citation_valid_rate*100).toFixed(1)}%`:"—"],['Answer coverage',e?`${(e.answer_term_coverage*100).toFixed(1)}%`:"—"]]; return <div className="page"><div className="page-toolbar"><div><div className="eyebrow">QUALITY LAB</div><h1>Evaluation</h1><p className="page-description">Measure retrieval precision, recall, reranking, grounding, citations and end-to-end answer quality.</p></div><button className="primary-button" onClick={runEvaluation} disabled={evaluationLoading}>{evaluationLoading?"Running…":"Run evaluation"}</button></div><div className="evaluation-controls"><div><h3>Evaluation mode</h3><p>Retrieval is faster. Full mode also evaluates generation and grounding.</p></div><label className="toggle"><input type="checkbox" checked={evaluationMode} onChange={e=>setEvaluationMode(e.target.checked)}/><span/>Full end-to-end</label></div>{evaluationLoading&&<div className="evaluation-progress"><div className="progress-head"><strong>{evaluationStage}</strong><span>{evaluationProgress}%</span></div><div className="progress-track"><div style={{width:`${evaluationProgress}%`}}/></div><div className="progress-steps"><span>Dataset</span><span>Retrieval</span><span>Reranking</span><span>Grounding</span><span>Report</span></div></div>}<div className="metric-grid">{metrics.map(m=><div className="metric-card" key={m[0]}><span>{m[0]}</span><strong>{m[1]}</strong></div>)}</div><div className="evaluation-method-grid">{[['Retrieval','Precision@K, Recall@K and source recall measure evidence relevance and coverage.'],['Reranking','Precision and recall show whether useful evidence reaches the top after reranking.'],['Grounding','Checks medical claims against retrieved evidence.'],['Citations','Checks evidence references before output.'],['Safety','Prevents unsupported behavior.'],['End-to-End','Measures the full SickleGuide pipeline.']].map(x=><div className="evaluation-method" key={x[0]}><div className="method-icon">✓</div><div><h3>{x[0]}</h3><p>{x[1]}</p></div></div>)}</div></div>; };
 
   const pageContent = page === "chat" ? renderChat() : page === "graph" ? renderGraph() : page === "data" ? renderData() : page === "pipeline" ? renderPipeline() : renderEvaluation();
   return <div className="app-shell"><button className="mobile-sidebar-toggle" onClick={()=>setCollapsed(v=>!v)}>☰</button>{renderSidebar()}<main className="main-shell">{pageContent}</main></div>;
