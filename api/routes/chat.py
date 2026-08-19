@@ -10,7 +10,6 @@ from src.evaluation.live import record_chat_evaluation
 from src.generation.llm import create_rag_engine
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
-
 _rag_engine = None
 
 
@@ -58,7 +57,6 @@ def build_chat_response(result: Dict[str, Any], query: str, chat_id: Optional[st
         citation = metadata.get("citation", f"{metadata.get('source', 'Unknown source')} — Page {metadata.get('page_number', 'Unknown')}")
         score = metadata.get("reranker_score")
         sources.append(Source(evidence_id=index, source=str(metadata.get("source", "Unknown source")), page_number=metadata.get("page_number"), citation=str(citation), reranker_score=float(score) if score is not None else None))
-
     grounding_review = result.get("grounding_review", {})
     citation_validation = result.get("citation_validation")
     return ChatResponse(query=query, chat_id=chat_id, answer=result.get("final_answer", ""), grounded=bool(grounding_review.get("grounded", False)), citations_valid=bool(citation_validation.get("valid", False)) if citation_validation else False, sources=sources, grounding_review=grounding_review, citation_validation=citation_validation)
@@ -85,7 +83,6 @@ async def chat_stream(request: ChatRequest):
     query = request.query.strip()
     if not query:
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
-
     history = [{"role": m.role, "content": m.content} for m in request.history]
 
     async def event_stream():
@@ -96,9 +93,6 @@ async def chat_stream(request: ChatRequest):
 
             result = await asyncio.to_thread(get_rag_engine().invoke, query, history)
             response = build_chat_response(result, query, request.chat_id)
-            live_evaluation = record_chat_evaluation(query, result)
-
-            yield "data: " + json.dumps({"type": "grounding", "grounded": response.grounded, "citations_valid": response.citations_valid}) + "\n\n"
 
             words = response.answer.split(" ")
             for index, word in enumerate(words):
@@ -107,7 +101,13 @@ async def chat_stream(request: ChatRequest):
                 await asyncio.sleep(0.018)
 
             yield "data: " + json.dumps({"type": "sources", "sources": [source.model_dump() for source in response.sources]}, ensure_ascii=False) + "\n\n"
-            yield "data: " + json.dumps({"type": "evaluation_recorded", "evaluation_id": live_evaluation["id"]}) + "\n\n"
+            yield "data: " + json.dumps({"type": "evaluation_status", "stage": "starting", "progress": 5, "message": "Evaluating retrieval quality..."}) + "\n\n"
+
+            await asyncio.sleep(0)
+            yield "data: " + json.dumps({"type": "evaluation_status", "stage": "grounding", "progress": 45, "message": "Checking grounding and evidence support..."}) + "\n\n"
+            live_evaluation = await asyncio.to_thread(record_chat_evaluation, query, result)
+            yield "data: " + json.dumps({"type": "evaluation_status", "stage": "complete", "progress": 100, "message": "Evaluation complete"}) + "\n\n"
+            yield "data: " + json.dumps({"type": "evaluation_result", "evaluation": live_evaluation}, ensure_ascii=False) + "\n\n"
             yield "data: " + json.dumps({"type": "done", "chat_id": response.chat_id, "grounded": response.grounded, "citations_valid": response.citations_valid}) + "\n\n"
         except Exception as exc:
             yield "data: " + json.dumps({"type": "error", "message": f"{type(exc).__name__}: {exc}"}) + "\n\n"
