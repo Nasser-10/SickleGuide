@@ -51,24 +51,19 @@ from src.retrieval.reranker import (
 # ============================================================
 
 DEFAULT_MODEL = "qwen2.5:7b"
-
 DEFAULT_BASE_URL = "http://localhost:11434"
-
 DEFAULT_TEMPERATURE = 0.0
-
 DEFAULT_NUM_PREDICT = 1200
 
 DEFAULT_DENSE_K = 15
-
 DEFAULT_BM25_K = 15
-
 DEFAULT_GRAPH_K = 15
-
 DEFAULT_CANDIDATE_K = 20
-
 DEFAULT_FINAL_K = 5
 
 MAX_GROUNDING_RETRIES = 1
+
+MAX_HISTORY_MESSAGES = 12
 
 
 # ============================================================
@@ -76,31 +71,21 @@ MAX_GROUNDING_RETRIES = 1
 # ============================================================
 
 class GroundingReview(BaseModel):
-    """
-    Strict medical RAG grounding review.
-    """
 
     grounded: bool = Field(
         description=(
-            "True when all important medical claims in the answer "
-            "are supported directly or faithfully paraphrased from "
-            "the retrieved evidence."
+            "True when all important medical claims are "
+            "supported directly or faithfully paraphrased "
+            "from the retrieved evidence."
         )
     )
 
     unsupported_claims: List[str] = Field(
         default_factory=list,
-        description=(
-            "Important medical claims that are not supported "
-            "by the retrieved evidence."
-        ),
     )
 
     reasoning: str = Field(
         default="",
-        description=(
-            "Brief explanation of the grounding decision."
-        ),
     )
 
 
@@ -111,6 +96,8 @@ class GroundingReview(BaseModel):
 class RAGState(TypedDict, total=False):
 
     query: str
+
+    conversation_history: List[Dict[str, str]]
 
     retrieved_documents: List[Document]
 
@@ -138,7 +125,7 @@ class RAGState(TypedDict, total=False):
 
 
 # ============================================================
-# SickleGuide RAG Engine
+# Engine
 # ============================================================
 
 class SickleGuideRAG:
@@ -157,6 +144,7 @@ class SickleGuideRAG:
         graph_path: str = "data/processed/graph.json",
         chunks_path: str = "data/processed/chunks.json",
     ):
+
         self.model_name = model_name
         self.base_url = base_url
         self.temperature = temperature
@@ -185,7 +173,7 @@ class SickleGuideRAG:
         self.rag_graph = None
 
     # ========================================================
-    # Initialization
+    # Initialize
     # ========================================================
 
     def initialize(self) -> None:
@@ -208,10 +196,6 @@ class SickleGuideRAG:
             flush=True,
         )
 
-        # ----------------------------------------------------
-        # Documents
-        # ----------------------------------------------------
-
         print(
             "\n[1/8] Loading processed chunks...",
             flush=True,
@@ -222,6 +206,7 @@ class SickleGuideRAG:
             "r",
             encoding="utf-8",
         ) as file:
+
             data = json.load(file)
 
         self.documents = [
@@ -245,10 +230,6 @@ class SickleGuideRAG:
                 "No processed documents found."
             )
 
-        # ----------------------------------------------------
-        # BM25
-        # ----------------------------------------------------
-
         print(
             "\n[2/8] Initializing BM25...",
             flush=True,
@@ -263,10 +244,6 @@ class SickleGuideRAG:
             flush=True,
         )
 
-        # ----------------------------------------------------
-        # Chroma
-        # ----------------------------------------------------
-
         print(
             "\n[3/8] Loading Chroma...",
             flush=True,
@@ -278,10 +255,6 @@ class SickleGuideRAG:
             f"      Vectors: {self.vector_store.count()}",
             flush=True,
         )
-
-        # ----------------------------------------------------
-        # Graph
-        # ----------------------------------------------------
 
         print(
             "\n[4/8] Loading medical graph...",
@@ -309,10 +282,6 @@ class SickleGuideRAG:
             )
         )
 
-        # ----------------------------------------------------
-        # Unified retrieval
-        # ----------------------------------------------------
-
         print(
             "\n[5/8] Creating unified retriever...",
             flush=True,
@@ -335,20 +304,12 @@ class SickleGuideRAG:
             flush=True,
         )
 
-        # ----------------------------------------------------
-        # Reranker
-        # ----------------------------------------------------
-
         print(
             "\n[6/8] Loading BGE reranker...",
             flush=True,
         )
 
         self.reranker = create_reranker()
-
-        # ----------------------------------------------------
-        # Generation LLM
-        # ----------------------------------------------------
 
         print(
             "\n[7/8] Loading generation LLM...",
@@ -362,10 +323,6 @@ class SickleGuideRAG:
             num_predict=self.num_predict,
         )
 
-        # ----------------------------------------------------
-        # Grounding reviewer
-        # ----------------------------------------------------
-
         print(
             "\n[8/8] Creating grounding reviewer...",
             flush=True,
@@ -377,10 +334,6 @@ class SickleGuideRAG:
                 method="json_schema",
             )
         )
-
-        # ----------------------------------------------------
-        # LangGraph
-        # ----------------------------------------------------
 
         print(
             "\nBuilding LangGraph workflow...",
@@ -404,6 +357,84 @@ class SickleGuideRAG:
         print(
             "=" * 70,
             flush=True,
+        )
+
+    # ========================================================
+    # Conversation history
+    # ========================================================
+
+    @staticmethod
+    def _clean_history(
+        history: Optional[List[Dict[str, str]]],
+    ) -> List[Dict[str, str]]:
+
+        if not history:
+            return []
+
+        cleaned = []
+
+        for item in history[-MAX_HISTORY_MESSAGES:]:
+
+            if not isinstance(
+                item,
+                dict,
+            ):
+                continue
+
+            role = str(
+                item.get(
+                    "role",
+                    "",
+                )
+            ).strip().lower()
+
+            content = str(
+                item.get(
+                    "content",
+                    "",
+                )
+            ).strip()
+
+            if role not in {
+                "user",
+                "assistant",
+            }:
+                continue
+
+            if not content:
+                continue
+
+            cleaned.append(
+                {
+                    "role": role,
+                    "content": content[:4000],
+                }
+            )
+
+        return cleaned
+
+    @staticmethod
+    def _format_history(
+        history: List[Dict[str, str]],
+    ) -> str:
+
+        if not history:
+            return (
+                "No previous conversation."
+            )
+
+        lines = []
+
+        for item in history:
+
+            role = item["role"].upper()
+
+            lines.append(
+                f"{role}: {item['content']}"
+            )
+
+        return "\n".join(
+            lines
         )
 
     # ========================================================
@@ -469,7 +500,7 @@ class SickleGuideRAG:
         }
 
     # ========================================================
-    # Reranking
+    # Rerank
     # ========================================================
 
     def _rerank_node(
@@ -521,6 +552,13 @@ class SickleGuideRAG:
             [],
         )
 
+        history = self._clean_history(
+            state.get(
+                "conversation_history",
+                [],
+            )
+        )
+
         safety_result = assess_query(
             query,
             documents,
@@ -546,6 +584,33 @@ class SickleGuideRAG:
                 query=query,
                 safety_instruction=safety_instruction,
             )
+
+        history_text = (
+            self._format_history(
+                history
+            )
+        )
+
+        prompt += f"""
+
+CONVERSATION CONTEXT:
+
+{history_text}
+
+IMPORTANT:
+The conversation context is ONLY for understanding references
+and continuity.
+
+It is NOT evidence.
+
+Do NOT use facts from previous assistant answers as medical evidence.
+
+The retrieved evidence remains the ONLY allowed source of
+medical facts for the current answer.
+
+If the current retrieved evidence does not support an answer,
+say that the evidence is insufficient.
+"""
 
         print(
             "\n[LangGraph] Generating answer...",
@@ -576,7 +641,7 @@ class SickleGuideRAG:
         }
 
     # ========================================================
-    # Grounding Review
+    # Grounding
     # ========================================================
 
     def _grounding_review_node(
@@ -610,6 +675,7 @@ class SickleGuideRAG:
             documents,
             start=1,
         ):
+
             citation = document.metadata.get(
                 "citation",
                 (
@@ -646,64 +712,35 @@ RETRIEVED EVIDENCE:
 GENERATED ANSWER:
 {answer}
 
-YOUR JOB:
-Determine whether the important medical claims in the generated
-answer are supported by the retrieved evidence.
-
 GROUNDING RULES:
 
 1. Direct statements in the evidence count as support.
-2. Faithful paraphrases of direct statements count as support.
-3. A concise summary of a sentence in the evidence counts as support
-   when it preserves the original meaning.
-4. If a clinical question in the evidence explicitly lists
-   interventions being evaluated, an answer that accurately says
-   those interventions "were evaluated" is SUPPORTED.
-5. Do not require the answer to copy the evidence word-for-word.
-6. Do not confuse "evaluated" with "recommended".
-7. Do not confuse "suggested" with "strongly recommended".
-8. Do not confuse "very low certainty" with "ineffective".
-9. Do not confuse "very low certainty" with "effective".
-10. Do not infer comparative effectiveness unless explicitly supported.
-11. Do not infer a universal recommendation from a scenario-specific
-    recommendation.
-12. General medical knowledge is NOT evidence.
-13. If the generated answer contains a claim that cannot be traced
-    to the evidence, mark it unsupported.
-14. A claim is NOT unsupported merely because the evidence is
-    presented as a clinical question; if the answer accurately
-    describes what that question explicitly asks or evaluates,
-    that statement is grounded.
-15. Be conservative about medical conclusions, but do not reject
-    faithful summaries of explicit source text.
-
-IMPORTANT EXAMPLE:
-
-Evidence:
-"KQ15. What is the most effective treatment among transfusion,
-exchange transfusion, supportive therapy, steroids, and/or
-antibiotics?"
-
-Supported answer:
-"The evidence review evaluated transfusion, exchange transfusion,
-supportive therapy, steroids, and antibiotics for ACS."
-
-NOT supported:
-"Transfusion is recommended as the best treatment."
-
-The first is a faithful description of the source.
-The second adds an unsupported clinical conclusion.
+2. Faithful paraphrases count as support.
+3. Concise summaries count when they preserve the meaning.
+4. Do not use general medical knowledge.
+5. Do not infer recommendations.
+6. Do not infer comparative effectiveness.
+7. Do not infer "best", "first-line", "most effective",
+   or "preferred" unless explicitly supported.
+8. Do not treat previous conversation as evidence.
+9. Only retrieved evidence can support medical facts.
+10. If evidence is insufficient, the answer must acknowledge it.
+11. Reject unsupported factual medical claims.
+12. Do not reject a faithful paraphrase merely because it uses
+    different wording.
+13. If a source explicitly lists interventions being evaluated,
+    accurately reporting that list is grounded.
+14. Preserve uncertainty from the evidence.
 
 GROUNDING DECISION:
 
-Set grounded=true when every important medical claim is either:
-- directly stated in the evidence, or
-- a faithful paraphrase that preserves the original meaning.
+grounded=true only when every important medical claim is
+directly supported or faithfully paraphrased.
 
-Set grounded=false only for claims that add unsupported medical
-information, recommendations, effectiveness claims, or conclusions.
+grounded=false when the answer adds unsupported medical facts,
+recommendations, effectiveness claims, or conclusions.
 
-If grounded=false, list the unsupported medical claims explicitly.
+Return a structured grounding decision.
 """
 
         review = self.reviewer.invoke(
@@ -731,12 +768,10 @@ If grounded=false, list the unsupported medical claims explicitly.
             flush=True,
         )
 
-        unsupported = review_dict.get(
+        for claim in review_dict.get(
             "unsupported_claims",
             [],
-        )
-
-        for claim in unsupported:
+        ):
             print(
                 f"  - {claim}",
                 flush=True,
@@ -747,7 +782,7 @@ If grounded=false, list the unsupported medical claims explicitly.
         }
 
     # ========================================================
-    # Grounding routing
+    # Grounding route
     # ========================================================
 
     def _route_after_grounding(
@@ -816,9 +851,11 @@ If grounded=false, list the unsupported medical claims explicitly.
             "",
         )
 
-        print(
-            "\n[LangGraph] Regenerating due to grounding failure...",
-            flush=True,
+        history = self._clean_history(
+            state.get(
+                "conversation_history",
+                [],
+            )
         )
 
         prompt = (
@@ -829,6 +866,22 @@ If grounded=false, list the unsupported medical claims explicitly.
                 unsupported_claims=unsupported_claims,
                 safety_instruction=safety_instruction,
             )
+        )
+
+        prompt += f"""
+
+CONVERSATION CONTEXT:
+
+{self._format_history(history)}
+
+Remember:
+Conversation context is NOT evidence.
+Only retrieved evidence can support medical claims.
+"""
+
+        print(
+            "\n[LangGraph] Regenerating due to grounding failure...",
+            flush=True,
         )
 
         response = self.llm.invoke(
@@ -859,7 +912,7 @@ If grounded=false, list the unsupported medical claims explicitly.
         }
 
     # ========================================================
-    # Fail Closed
+    # Fail closed
     # ========================================================
 
     def _grounding_failure_node(
@@ -907,6 +960,7 @@ If grounded=false, list the unsupported medical claims explicitly.
                 )
 
                 if not citation:
+
                     citation = (
                         f"{document.metadata.get('source', 'Unknown source')}"
                         f" — Page "
@@ -916,9 +970,7 @@ If grounded=false, list the unsupported medical claims explicitly.
                 if citation in seen:
                     continue
 
-                seen.add(
-                    citation
-                )
+                seen.add(citation)
 
                 source_lines.append(
                     f"[{index}] {citation}"
@@ -940,7 +992,7 @@ If grounded=false, list the unsupported medical claims explicitly.
         }
 
     # ========================================================
-    # Citation Validation
+    # Citation
     # ========================================================
 
     def _citation_node(
@@ -1003,7 +1055,7 @@ If grounded=false, list the unsupported medical claims explicitly.
         }
 
     # ========================================================
-    # Safety Output
+    # Safety output
     # ========================================================
 
     def _safety_output_node(
@@ -1032,7 +1084,7 @@ If grounded=false, list the unsupported medical claims explicitly.
         }
 
     # ========================================================
-    # LangGraph
+    # Graph
     # ========================================================
 
     def _build_graph(self):
@@ -1143,12 +1195,15 @@ If grounded=false, list the unsupported medical claims explicitly.
         return workflow.compile()
 
     # ========================================================
-    # Public API
+    # Public invoke
     # ========================================================
 
     def invoke(
         self,
         query: str,
+        conversation_history: Optional[
+            List[Dict[str, str]]
+        ] = None,
     ) -> Dict[str, Any]:
 
         if not isinstance(
@@ -1168,6 +1223,10 @@ If grounded=false, list the unsupported medical claims explicitly.
 
         self.initialize()
 
+        history = self._clean_history(
+            conversation_history
+        )
+
         print(
             "\n" + "=" * 70,
             flush=True,
@@ -1186,16 +1245,21 @@ If grounded=false, list the unsupported medical claims explicitly.
         return self.rag_graph.invoke(
             {
                 "query": query,
+                "conversation_history": history,
             }
         )
 
     def answer(
         self,
         query: str,
+        conversation_history: Optional[
+            List[Dict[str, str]]
+        ] = None,
     ) -> str:
 
         result = self.invoke(
-            query
+            query,
+            conversation_history,
         )
 
         return result.get(
@@ -1224,7 +1288,7 @@ def create_rag_engine(
 
 
 # ============================================================
-# Backward-compatible helpers
+# Helpers
 # ============================================================
 
 def get_llm(
