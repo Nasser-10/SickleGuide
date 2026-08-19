@@ -26,23 +26,23 @@ Instead of relying only on unsupported LLM knowledge, SickleGuide combines **hyb
 
 ###  Clinical Chat
 
-![SickleGuide Chat](docs/screenshots/chat.png)
+![SickleGuide Chat](docs/images/chat.jpeg)
 
 ###  Evidence & Citations
 
-![Evidence and Citations](docs/screenshots/evidence.png)
+![Evidence and Citations](docs/images/evidence.jpeg)
 
 ###  Knowledge Graph
 
-![Knowledge Graph](docs/screenshots/graph.png)
+![Knowledge Graph](docs/images/graph.jpeg)
 
 ###  Evaluation
 
-![Evaluation Dashboard](docs/screenshots/evaluation.png)
+![Evaluation Dashboard](docs/images/evaluation.jpeg)
 
 ###  Knowledge Base
 
-![Knowledge Base](docs/screenshots/knowledge-base.png)
+![Knowledge Base](docs/screenshots/knowledge-base.jpeg)
 
 ---
 
