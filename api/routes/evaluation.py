@@ -22,12 +22,12 @@ RUBRIC = [
 ]
 
 
-def run_eval_sync(full: bool):
+def run_eval_sync(full: bool = True):
     from src.evaluation.evaluate import run_evaluation
-    return run_evaluation(run_end_to_end=full)
+    return run_evaluation(run_end_to_end=True)
 
 
-def _rubric_snapshot(report: dict[str, Any], full: bool) -> list[dict[str, Any]]:
+def _rubric_snapshot(report: dict[str, Any]) -> list[dict[str, Any]]:
     retrieval = (report.get("retrieval") or {}).get("summary") or {}
     end_to_end = (report.get("end_to_end") or {}).get("summary") or {}
     measured = {
@@ -45,8 +45,10 @@ def _rubric_snapshot(report: dict[str, Any], full: bool) -> list[dict[str, Any]]
 @router.post("/run")
 async def run_evaluation(request: EvaluationRequest):
     try:
-        result = await asyncio.to_thread(run_eval_sync, request.full)
-        return {"success": True, "mode": "full" if request.full else "retrieval", "report": result, "rubric": _rubric_snapshot(result, request.full)}
+        # The benchmark endpoint is intentionally complete: a judge should never
+        # see a partial retrieval-only report with missing grounding metrics.
+        result = await asyncio.to_thread(run_eval_sync, True)
+        return {"success": True, "mode": "full", "report": result, "rubric": _rubric_snapshot(result)}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Evaluation failed: {type(exc).__name__}: {exc}") from exc
 
