@@ -570,6 +570,7 @@ FastAPI routes cover the main application capabilities, including:
 #  Project Structure
 
 ```text
+
 SickleGuide/
 │
 ├── api/
@@ -600,15 +601,28 @@ SickleGuide/
 │   ├── raw/
 │   └── processed/
 │
+├── docs/
+│   ├── demo/
+│   │   └── ...
+│   └── images/
+│       ├── chat.jpeg
+│       ├── evaluation.jpeg
+│       ├── evidence.jpeg
+│       ├── graph.jpeg
+│       └── knowledge-base.jpeg
+│
 ├── scripts/
 ├── tests/
 │
 ├── .env.example
+├── .gitignore
 ├── requirements.txt
 ├── Dockerfile
 ├── docker-compose.yml
 ├── run.py
 └── README.md
+
+
 ```
 
 ---
