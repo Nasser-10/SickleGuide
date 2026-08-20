@@ -19,7 +19,8 @@ from src.retrieval.reranker import create_reranker
 DEFAULT_MODEL = "qwen2.5:7b"
 DEFAULT_BASE_URL = "http://localhost:11434"
 DEFAULT_TEMPERATURE = 0.0
-DEFAULT_NUM_PREDICT = 1200
+# Keep answers concise for an interactive local demo; grounding/citation checks still run.
+DEFAULT_NUM_PREDICT = 800
 DEFAULT_DENSE_K = 15
 DEFAULT_BM25_K = 15
 DEFAULT_GRAPH_K = 15
@@ -108,14 +109,9 @@ class SickleGuideRAG:
         return {"raw_answer": content, "grounded_answer": content, "safety_result": safety_result, "safety_instruction": safety_instruction, "grounding_retry_count": 0, "grounding_failed": False}
 
     def _grounding_review_node(self, state: RAGState) -> RAGState:
-        query = state["query"]
-        answer = state.get("grounded_answer", state.get("raw_answer", ""))
-        documents = state.get("final_documents", [])
-        evidence_blocks = []
+        query = state["query"]; answer = state.get("grounded_answer", state.get("raw_answer", "")); documents = state.get("final_documents", []); evidence_blocks = []
         for i, document in enumerate(documents, 1):
-            citation = document.metadata.get("citation")
-            if not citation:
-                citation = f"{document.metadata.get('source', 'Unknown source')} — Page {document.metadata.get('page_number', 'Unknown')}"
+            citation = document.metadata.get("citation") or f"{document.metadata.get('source', 'Unknown source')} — Page {document.metadata.get('page_number', 'Unknown')}"
             evidence_blocks.append(f"[Evidence {i}]\nCitation: {citation}\nContent:\n{document.page_content}")
         evidence_text = "\n\n".join(evidence_blocks)
         prompt = f"""You are a strict but fair medical RAG grounding evaluator.\nQUESTION:\n{query}\n\nRETRIEVED EVIDENCE:\n{evidence_text}\n\nGENERATED ANSWER:\n{answer}\n\nA claim is grounded only when directly supported or faithfully paraphrased by the evidence. Do not use general medical knowledge, infer recommendations, comparative effectiveness, or unsupported conclusions. Preserve uncertainty. Do not treat conversation as evidence. Faithful concise summaries count as grounded. Return a structured grounding decision."""
@@ -129,14 +125,12 @@ class SickleGuideRAG:
         return "grounding_failure"
 
     def _regenerate_node(self, state: RAGState) -> RAGState:
-        prompt = build_grounded_regeneration_prompt(query=state["query"], documents=state.get("final_documents", []), previous_answer=state.get("grounded_answer", ""), unsupported_claims=state.get("grounding_review", {}).get("unsupported_claims", []), safety_instruction=state.get("safety_instruction", ""))
-        prompt += f"\n\nCONVERSATION CONTEXT:\n{self._format_history(self._clean_history(state.get('conversation_history', [])))}\n\nConversation context is NOT evidence. Only retrieved evidence can support medical claims."
+        prompt = build_grounded_regeneration_prompt(query=state["query"], documents=state.get("final_documents", []), previous_answer=state.get("grounded_answer", ""), unsupported_claims=state.get("grounding_review", {}).get("unsupported_claims", []), safety_instruction=state.get("safety_instruction", "")); prompt += f"\n\nCONVERSATION CONTEXT:\n{self._format_history(self._clean_history(state.get('conversation_history', [])))}\n\nConversation context is NOT evidence. Only retrieved evidence can support medical claims."
         response = self.llm.invoke(prompt); content = str(getattr(response, "content", response)).strip(); retry = state.get("grounding_retry_count", 0)
         return {"grounded_answer": content, "raw_answer": content, "grounding_retry_count": retry + 1}
 
     def _grounding_failure_node(self, state: RAGState) -> RAGState:
-        documents = state.get("final_documents", [])
-        safe_answer = "I could not generate a sufficiently evidence-grounded answer to this question from the retrieved SickleGuide sources. The available evidence did not support all of the claims required for a reliable answer."
+        documents = state.get("final_documents", []); safe_answer = "I could not generate a sufficiently evidence-grounded answer to this question from the retrieved SickleGuide sources. The available evidence did not support all of the claims required for a reliable answer."
         if documents:
             seen = set(); lines = []
             for i, d in enumerate(documents, 1):
@@ -146,48 +140,32 @@ class SickleGuideRAG:
         return {"grounding_failed": True, "grounded_answer": safe_answer, "final_answer": safe_answer}
 
     def _citation_node(self, state: RAGState) -> RAGState:
-        answer = state.get("grounded_answer", state.get("raw_answer", "")); documents = state.get("final_documents", [])
-        final_answer = format_answer_with_citations(answer, documents)
-        citation_map = {}
-        for i, document in enumerate(documents, 1):
-            citation = document.metadata.get("citation")
-            if not citation:
-                citation = f"{document.metadata.get('source', 'Unknown source')} — Page {document.metadata.get('page_number', 'Unknown')}"
-            citation_map[i] = citation
-        validation = validate_citations(final_answer, citation_map)
-        return {"final_answer": final_answer, "citation_validation": validation}
+        answer = state.get("grounded_answer", state.get("raw_answer", "")); documents = state.get("final_documents", []); final_answer = format_answer_with_citations(answer, documents); citation_map = {}
+        for i, document in enumerate(documents, 1): citation_map[i] = document.metadata.get("citation") or f"{document.metadata.get('source', 'Unknown source')} — Page {document.metadata.get('page_number', 'Unknown')}"
+        return {"final_answer": final_answer, "citation_validation": validate_citations(final_answer, citation_map)}
 
     def _safety_output_node(self, state: RAGState) -> RAGState:
         return {"final_answer": apply_safety_notice(state.get("final_answer", ""), state["safety_result"])}
 
     def _build_graph(self):
         workflow = StateGraph(RAGState)
-        for name, node in [("safety", self._safety_node), ("retrieve", self._retrieve_node), ("rerank", self._rerank_node), ("generate", self._generation_node), ("grounding_review", self._grounding_review_node), ("regenerate", self._regenerate_node), ("grounding_failure", self._grounding_failure_node), ("citations", self._citation_node), ("safety_output", self._safety_output_node)]: workflow.add_node(name, node)
-        workflow.set_entry_point("safety"); workflow.add_edge("safety", "retrieve"); workflow.add_edge("retrieve", "rerank"); workflow.add_edge("rerank", "generate"); workflow.add_edge("generate", "grounding_review")
-        workflow.add_conditional_edges("grounding_review", self._route_after_grounding, {"regenerate": "regenerate", "citations": "citations", "grounding_failure": "grounding_failure"})
-        workflow.add_edge("regenerate", "grounding_review"); workflow.add_edge("grounding_failure", "safety_output"); workflow.add_edge("citations", "safety_output"); workflow.add_edge("safety_output", END)
-        return workflow.compile()
+        for name, node in [("safety", self._safety_node),("retrieve", self._retrieve_node),("rerank", self._rerank_node),("generate", self._generation_node),("grounding_review", self._grounding_review_node),("regenerate", self._regenerate_node),("grounding_failure", self._grounding_failure_node),("citations", self._citation_node),("safety_output", self._safety_output_node)]: workflow.add_node(name,node)
+        workflow.set_entry_point("safety");workflow.add_edge("safety","retrieve");workflow.add_edge("retrieve","rerank");workflow.add_edge("rerank","generate");workflow.add_edge("generate","grounding_review");workflow.add_conditional_edges("grounding_review",self._route_after_grounding,{"regenerate":"regenerate","citations":"citations","grounding_failure":"grounding_failure"});workflow.add_edge("regenerate","grounding_review");workflow.add_edge("grounding_failure","safety_output");workflow.add_edge("citations","safety_output");workflow.add_edge("safety_output",END);return workflow.compile()
 
     def invoke(self, query: str, conversation_history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
-        if not isinstance(query, str): raise TypeError("query must be a string")
-        query = query.strip()
+        if not isinstance(query,str): raise TypeError("query must be a string")
+        query=query.strip()
         if not query: raise ValueError("query cannot be empty")
-        self.initialize(); history = self._clean_history(conversation_history)
-        return self.rag_graph.invoke({"query": query, "conversation_history": history})
+        self.initialize();return self.rag_graph.invoke({"query":query,"conversation_history":self._clean_history(conversation_history)})
 
-    def answer(self, query: str, conversation_history: Optional[List[Dict[str, str]]] = None) -> str:
-        return self.invoke(query, conversation_history).get("final_answer", "")
+    def answer(self, query: str, conversation_history: Optional[List[Dict[str, str]]] = None) -> str: return self.invoke(query,conversation_history).get("final_answer","")
 
 
-def create_rag_engine(model_name: str = DEFAULT_MODEL, base_url: str = DEFAULT_BASE_URL, temperature: float = DEFAULT_TEMPERATURE, num_predict: int = DEFAULT_NUM_PREDICT) -> SickleGuideRAG:
-    return SickleGuideRAG(model_name=model_name, base_url=base_url, temperature=temperature, num_predict=num_predict)
+def create_rag_engine(model_name: str = DEFAULT_MODEL, base_url: str = DEFAULT_BASE_URL, temperature: float = DEFAULT_TEMPERATURE, num_predict: int = DEFAULT_NUM_PREDICT) -> SickleGuideRAG: return SickleGuideRAG(model_name=model_name,base_url=base_url,temperature=temperature,num_predict=num_predict)
 
-
-def get_llm(model_name: str = DEFAULT_MODEL, base_url: str = DEFAULT_BASE_URL, temperature: float = DEFAULT_TEMPERATURE, num_predict: int = DEFAULT_NUM_PREDICT):
-    return ChatOllama(model=model_name, base_url=base_url, temperature=temperature, num_predict=num_predict)
-
+def get_llm(model_name: str = DEFAULT_MODEL, base_url: str = DEFAULT_BASE_URL, temperature: float = DEFAULT_TEMPERATURE, num_predict: int = DEFAULT_NUM_PREDICT): return ChatOllama(model=model_name,base_url=base_url,temperature=temperature,num_predict=num_predict)
 
 def generate(prompt: str, llm=None) -> str:
-    if not isinstance(prompt, str): raise TypeError("prompt must be a string")
+    if not isinstance(prompt,str): raise TypeError("prompt must be a string")
     if not prompt.strip(): raise ValueError("prompt cannot be empty")
-    model = llm or get_llm(); response = model.invoke(prompt); return str(getattr(response, "content", response)).strip()
+    model=llm or get_llm();response=model.invoke(prompt);return str(getattr(response,"content",response)).strip()
