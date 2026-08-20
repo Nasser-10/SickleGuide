@@ -51,16 +51,12 @@ def precision_at_k(
     expected_keywords: Sequence[str] | None = None,
     k: int = 5,
 ) -> float:
-    """Fraction of the top-k retrieved documents that are relevant."""
     if k <= 0:
         raise ValueError("k must be greater than 0")
     top_documents = list(documents)[:k]
     if not top_documents:
         return 0.0
-    relevant = sum(
-        document_is_relevant(document, expected_sources, expected_pages, expected_keywords)
-        for document in top_documents
-    )
+    relevant = sum(document_is_relevant(document, expected_sources, expected_pages, expected_keywords) for document in top_documents)
     return float(relevant / len(top_documents))
 
 
@@ -74,6 +70,8 @@ def recall_at_k(
     if k <= 0:
         raise ValueError("k must be greater than 0")
     top_documents = list(documents)[:k]
+    if not top_documents:
+        return 0.0
     return float(any(document_is_relevant(document, expected_sources, expected_pages, expected_keywords) for document in top_documents))
 
 
@@ -93,16 +91,46 @@ def source_recall_at_k(documents: Sequence[Document], expected_sources: Sequence
     return len(found) / len(expected_sources)
 
 
+def reciprocal_rank_at_k(
+    documents: Sequence[Document],
+    expected_sources: Sequence[str],
+    expected_pages: Sequence[int] | None = None,
+    expected_keywords: Sequence[str] | None = None,
+    k: int = 5,
+) -> float:
+    if k <= 0:
+        raise ValueError("k must be greater than 0")
+    top_documents = list(documents)[:k]
+    for rank, document in enumerate(top_documents, start=1):
+        if document_is_relevant(document, expected_sources, expected_pages, expected_keywords):
+            return 1.0 / rank
+    return 0.0
+
+
 def reciprocal_rank(
     documents: Sequence[Document],
     expected_sources: Sequence[str],
     expected_pages: Sequence[int] | None = None,
     expected_keywords: Sequence[str] | None = None,
 ) -> float:
-    for rank, document in enumerate(documents, start=1):
-        if document_is_relevant(document, expected_sources, expected_pages, expected_keywords):
-            return 1.0 / rank
-    return 0.0
+    return reciprocal_rank_at_k(documents, expected_sources, expected_pages, expected_keywords, k=len(documents) or 1)
+
+
+def retrieval_metrics_at_k(
+    documents: Sequence[Document],
+    expected_sources: Sequence[str],
+    expected_pages: Sequence[int] | None,
+    expected_keywords: Sequence[str] | None,
+    k_values: Sequence[int] = (3, 5, 10),
+) -> Dict[str, Dict[str, float]]:
+    metrics: Dict[str, Dict[str, float]] = {}
+    for k in k_values:
+        metrics[str(k)] = {
+            "precision": precision_at_k(documents, expected_sources, expected_pages, expected_keywords, k),
+            "recall": recall_at_k(documents, expected_sources, expected_pages, expected_keywords, k),
+            "mrr": reciprocal_rank_at_k(documents, expected_sources, expected_pages, expected_keywords, k),
+        }
+    return metrics
 
 
 def citation_numbers_valid(answer: str, citation_map: Dict[int, str]) -> bool:
@@ -133,10 +161,14 @@ def mean(values: Iterable[float]) -> float:
 
 def summarize_retrieval_metrics(case_results: List[Dict]) -> Dict[str, float]:
     return {
-        "precision@5": mean(item["precision@5"] for item in case_results),
-        "recall@5": mean(item["recall@5"] for item in case_results),
-        "recall@10": mean(item["recall@10"] for item in case_results),
-        "recall@20": mean(item["recall@20"] for item in case_results),
-        "mrr": mean(item["mrr"] for item in case_results),
+        "precision@3": mean(item["k_metrics"]["3"]["precision"] for item in case_results),
+        "precision@5": mean(item["k_metrics"]["5"]["precision"] for item in case_results),
+        "precision@10": mean(item["k_metrics"]["10"]["precision"] for item in case_results),
+        "recall@3": mean(item["k_metrics"]["3"]["recall"] for item in case_results),
+        "recall@5": mean(item["k_metrics"]["5"]["recall"] for item in case_results),
+        "recall@10": mean(item["k_metrics"]["10"]["recall"] for item in case_results),
+        "mrr@3": mean(item["k_metrics"]["3"]["mrr"] for item in case_results),
+        "mrr@5": mean(item["k_metrics"]["5"]["mrr"] for item in case_results),
+        "mrr@10": mean(item["k_metrics"]["10"]["mrr"] for item in case_results),
         "source_recall@10": mean(item["source_recall@10"] for item in case_results),
     }
