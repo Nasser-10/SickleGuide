@@ -79,6 +79,14 @@ def build_chat_response(result: Dict[str, Any], query: str, chat_id: Optional[st
     return ChatResponse(query=query, chat_id=chat_id, answer=result.get("final_answer", ""), grounded=bool(grounding_review.get("grounded", False)), citations_valid=bool(citation_validation.get("valid", False)) if citation_validation else False, sources=sources, grounding_review=grounding_review, citation_validation=citation_validation)
 
 
+def _record_evaluation_background(query: str, result: Dict[str, Any]) -> None:
+    try:
+        record_chat_evaluation(query, result)
+    except Exception:
+        # Evaluation must never block or fail an otherwise successful clinical answer.
+        pass
+
+
 @router.post("", response_model=ChatResponse)
 def chat(request: ChatRequest):
     query = request.query.strip()
@@ -90,7 +98,7 @@ def chat(request: ChatRequest):
         result = robust_invoke(get_rag_engine(), query, conversation_history=history)
         answer = result.get("final_answer", "")
         _memory.append_turn(chat_id, query, answer)
-        record_chat_evaluation(query, result)
+        asyncio.get_event_loop().run_in_executor(None, _record_evaluation_background, query, result)
         return build_chat_response(result, query, chat_id)
     except HTTPException:
         raise
@@ -108,26 +116,31 @@ async def chat_stream(request: ChatRequest):
 
     async def event_stream():
         try:
-            for stage, message in [("retrieval", "Searching clinical evidence..."), ("reranking", "Ranking the most relevant evidence..."), ("generation", "Generating an evidence-grounded answer...")]:
-                yield "data: " + json.dumps({"type": "status", "stage": stage, "message": message}) + "\n\n"
-                await asyncio.sleep(0)
+            yield "data: " + json.dumps({"type": "status", "stage": "retrieval", "message": "Searching clinical evidence..."}) + "\n\n"
+            await asyncio.sleep(0)
+            yield "data: " + json.dumps({"type": "status", "stage": "reranking", "message": "Ranking the most relevant evidence..."}) + "\n\n"
+            await asyncio.sleep(0)
+            yield "data: " + json.dumps({"type": "status", "stage": "generation", "message": "Generating an evidence-grounded answer..."}) + "\n\n"
 
-            result = await asyncio.to_thread(robust_invoke, get_rag_engine(), query, history)
+            result = await asyncio.to_thread(robust_invoke, get_rag_engine(), query, conversation_history=history)
             response = build_chat_response(result, query, chat_id)
 
+            # The model invocation is the expensive part. Once it completes, emit the
+            # answer rapidly so the UI feels live without adding artificial latency.
             words = response.answer.split(" ")
             for index, word in enumerate(words):
                 token = word if index == len(words) - 1 else word + " "
                 yield "data: " + json.dumps({"type": "token", "content": token}, ensure_ascii=False) + "\n\n"
-                await asyncio.sleep(0.018)
+                if index % 8 == 0:
+                    await asyncio.sleep(0)
 
             _memory.append_turn(chat_id, query, response.answer)
             yield "data: " + json.dumps({"type": "sources", "sources": [source.model_dump() for source in response.sources]}, ensure_ascii=False) + "\n\n"
-            yield "data: " + json.dumps({"type": "evaluation_status", "stage": "starting", "progress": 5, "message": "Evaluating retrieval quality..."}) + "\n\n"
-            yield "data: " + json.dumps({"type": "evaluation_status", "stage": "grounding", "progress": 45, "message": "Checking grounding and evidence support..."}) + "\n\n"
-            live_evaluation = await asyncio.to_thread(record_chat_evaluation, query, result)
-            yield "data: " + json.dumps({"type": "evaluation_status", "stage": "complete", "progress": 100, "message": "Evaluation complete"}) + "\n\n"
-            yield "data: " + json.dumps({"type": "evaluation_result", "evaluation": live_evaluation}, ensure_ascii=False) + "\n\n"
+            yield "data: " + json.dumps({"type": "answer_complete", "grounded": response.grounded, "citations_valid": response.citations_valid}) + "\n\n"
+            yield "data: " + json.dumps({"type": "evaluation_status", "stage": "background", "progress": 0, "message": "Quality evaluation is running in the Evaluation dashboard."}) + "\n\n"
+
+            # Do not hold the HTTP stream open for LLM-based evaluation.
+            asyncio.create_task(asyncio.to_thread(_record_evaluation_background, query, result))
             yield "data: " + json.dumps({"type": "done", "chat_id": chat_id, "grounded": response.grounded, "citations_valid": response.citations_valid}) + "\n\n"
         except Exception as exc:
             yield "data: " + json.dumps({"type": "error", "message": f"{type(exc).__name__}: {exc}"}) + "\n\n"
