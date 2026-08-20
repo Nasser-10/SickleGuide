@@ -10,17 +10,7 @@ Instead of relying only on unsupported LLM knowledge, SickleGuide combines **hyb
 
 > ⚠️ **SickleGuide is an educational and research aid. It does not diagnose patients or replace qualified healthcare professionals.**
 
----
 
-##  Demo
-
-
-
-[![SickleGuide Demo](docs/demo-thumbnail.png)](YOUR_DEMO_VIDEO_LINK)
-
-** Watch SickleGuide in action**
-
----
 
 ##  Screenshots
 
@@ -602,8 +592,6 @@ SickleGuide/
 │   └── processed/
 │
 ├── docs/
-│   ├── demo/
-│   │   └── ...
 │   └── images/
 │       ├── chat.jpeg
 │       ├── evaluation.jpeg
