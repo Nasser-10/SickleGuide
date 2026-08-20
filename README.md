@@ -13,6 +13,9 @@ Instead of relying only on unsupported LLM knowledge, SickleGuide combines **hyb
 
 
 ##  Screenshots
+###  Pipeline
+
+![Pipeline](docs/images/Pipeline.jpeg)
 
 ###  Clinical Chat
 
