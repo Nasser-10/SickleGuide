@@ -8,17 +8,15 @@ router = APIRouter(prefix="/evaluation", tags=["Evaluation"])
 
 
 class EvaluationRequest(BaseModel):
-    # Fast benchmark is the default. Full E2E is explicitly opt-in because it
-    # invokes the local LLM for every evaluation case.
     full: bool = False
 
 
 RUBRIC = [
     {"id": "retrieval_quality", "title": "Retrieval Quality", "description": "Measures whether retrieval and reranking surface relevant clinical evidence.", "metrics": ["precision@3", "precision@5", "precision@10", "recall@3", "recall@5", "recall@10", "mrr@3", "mrr@5", "mrr@10"], "mode": "automatic"},
-    {"id": "grounding_faithfulness", "title": "Answer Grounding & Faithfulness", "description": "Checks whether generated answers stay supported by retrieved evidence and citations.", "metrics": ["grounded_rate", "citation_valid_rate", "answer_term_coverage"], "mode": "e2e"},
+    {"id": "grounding_faithfulness", "title": "Answer Grounding & Faithfulness", "description": "Checks whether generated answers stay supported by retrieved evidence and citations.", "metrics": ["grounded_rate", "citation_valid_rate", "answer_term_coverage"], "mode": "full_e2e"},
     {"id": "architecture_fullstack", "title": "System Architecture & Full-Stack Implementation", "description": "Assesses ingestion, retrieval, graph, API and frontend integration.", "metrics": [], "mode": "demo_review"},
-    {"id": "evaluation_metrics", "title": "Evaluation & Metrics Implementation", "description": "Assesses reproducible evaluation datasets, retrieval metrics and end-to-end reporting.", "metrics": ["precision@k", "recall@k", "mrr@k"], "mode": "automatic"},
-    {"id": "clinical_safety", "title": "Clinical Safety & Responsible AI", "description": "Reviews evidence-first behavior, uncertainty handling and safe failure.", "metrics": ["grounded_rate", "citation_valid_rate"], "mode": "e2e"},
+    {"id": "evaluation_metrics", "title": "Evaluation & Metrics Implementation", "description": "Assesses reproducible evaluation datasets, retrieval metrics and end-to-end reporting.", "metrics": ["precision@3/5/10", "recall@3/5/10", "mrr@3/5/10"], "mode": "automatic"},
+    {"id": "clinical_safety", "title": "Clinical Safety & Responsible AI", "description": "Reviews evidence-first behavior, uncertainty handling and safe failure.", "metrics": ["grounded_rate", "citation_valid_rate"], "mode": "full_e2e"},
     {"id": "presentation_demo", "title": "Presentation, Communication & Live Demo", "description": "Demo-facing criterion covering clarity, usability and reliability.", "metrics": [], "mode": "demo_review"},
     {"id": "innovation", "title": "Innovation & Out-of-the-Box Thinking", "description": "Highlights graph retrieval, evidence fusion, claim checking and transparent evidence exploration.", "metrics": [], "mode": "demo_review"},
 ]
@@ -41,14 +39,26 @@ def _rubric_snapshot(report: dict[str, Any]) -> list[dict[str, Any]]:
         "presentation_demo": True,
         "innovation": True,
     }
-    return [{**item, "status": "measured" if measured[item["id"]] and item["mode"] != "demo_review" else ("run Full E2E" if item["mode"] == "e2e" else "demo review"), "score": None} for item in RUBRIC]
+    return [
+        {
+            **item,
+            "status": "measured" if measured[item["id"]] and item["mode"] != "demo_review" else ("run Full E2E" if item["mode"] == "full_e2e" else "demo review"),
+            "score": None,
+        }
+        for item in RUBRIC
+    ]
 
 
 @router.post("/run")
 async def run_evaluation(request: EvaluationRequest):
     try:
         result = await asyncio.to_thread(run_eval_sync, request.full)
-        return {"success": True, "mode": "full" if request.full else "retrieval", "report": result, "rubric": _rubric_snapshot(result)}
+        return {
+            "success": True,
+            "mode": "full" if request.full else "fast",
+            "report": result,
+            "rubric": _rubric_snapshot(result),
+        }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Evaluation failed: {type(exc).__name__}: {exc}") from exc
 
