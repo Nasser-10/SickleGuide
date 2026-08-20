@@ -1,5 +1,7 @@
-import asyncio
-from typing import Any
+import copy
+import threading
+import uuid
+from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -21,46 +23,49 @@ RUBRIC = [
     {"id": "innovation", "title": "Innovation & Out-of-the-Box Thinking", "description": "Highlights graph retrieval, evidence fusion, claim checking and transparent evidence exploration.", "metrics": [], "mode": "demo_review"},
 ]
 
-
-def run_eval_sync(full: bool = False):
-    from src.evaluation.evaluate import run_evaluation
-    return run_evaluation(run_end_to_end=full)
+_jobs: Dict[str, Dict[str, Any]] = {}
+_lock = threading.Lock()
 
 
-def _rubric_snapshot(report: dict[str, Any]) -> list[dict[str, Any]]:
-    retrieval = (report.get("retrieval") or {}).get("summary") or {}
-    end_to_end = (report.get("end_to_end") or {}).get("summary") or {}
-    measured = {
-        "retrieval_quality": bool(retrieval),
-        "grounding_faithfulness": bool(end_to_end),
-        "architecture_fullstack": True,
-        "evaluation_metrics": bool(retrieval),
-        "clinical_safety": bool(end_to_end),
-        "presentation_demo": True,
-        "innovation": True,
-    }
-    return [
-        {
-            **item,
-            "status": "measured" if measured[item["id"]] and item["mode"] != "demo_review" else ("run Full E2E" if item["mode"] == "full_e2e" else "demo review"),
-            "score": None,
-        }
-        for item in RUBRIC
-    ]
+def _set(job_id: str, **updates: Any) -> None:
+    with _lock:
+        if job_id in _jobs:
+            _jobs[job_id].update(updates)
+
+
+def _get(job_id: str):
+    with _lock:
+        return copy.deepcopy(_jobs.get(job_id))
+
+
+def _run(job_id: str, full: bool) -> None:
+    try:
+        from src.evaluation.evaluate import run_evaluation
+
+        def progress(event: Dict[str, Any]) -> None:
+            _set(job_id, stage=event.get("stage", "working"), progress=int(event.get("progress", 0)), message=event.get("message", "Working..."), partial=event.get("partial"))
+
+        report = run_evaluation(run_end_to_end=full, progress_callback=progress)
+        _set(job_id, status="completed", stage="complete", progress=100, message="Evaluation complete", partial=report, report=report)
+    except Exception as exc:
+        _set(job_id, status="failed", stage="error", message=f"{type(exc).__name__}: {exc}")
 
 
 @router.post("/run")
-async def run_evaluation(request: EvaluationRequest):
-    try:
-        result = await asyncio.to_thread(run_eval_sync, request.full)
-        return {
-            "success": True,
-            "mode": "full" if request.full else "fast",
-            "report": result,
-            "rubric": _rubric_snapshot(result),
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Evaluation failed: {type(exc).__name__}: {exc}") from exc
+async def start_evaluation(request: EvaluationRequest):
+    job_id = uuid.uuid4().hex
+    with _lock:
+        _jobs[job_id] = {"job_id": job_id, "status": "running", "stage": "queued", "progress": 0, "message": "Evaluation queued...", "mode": "full" if request.full else "fast", "partial": None, "report": None}
+    threading.Thread(target=_run, args=(job_id, request.full), daemon=True).start()
+    return {"success": True, "job_id": job_id, "mode": "full" if request.full else "fast", "status": "running"}
+
+
+@router.get("/run/{job_id}")
+async def evaluation_status(job_id: str):
+    result = _get(job_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Evaluation job not found.")
+    return result
 
 
 @router.get("/rubric")
